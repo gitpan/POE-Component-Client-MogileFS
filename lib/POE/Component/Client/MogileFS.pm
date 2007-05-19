@@ -30,7 +30,6 @@ sub spawn {
                 killme => 'handle_killme',
             },
         ],
-        args => [ \%args ],
         heap => { args => \%args,
                   todo => $args{todo},
                 },
@@ -66,21 +65,19 @@ sub shutdown {
 sub handle_task_result {
     my ($kernel,$heap,$result) = @_[KERNEL,HEAP,ARG0];
     return unless defined $heap->{args}->{result};
-    my ($session, $event);
-    ref($heap->{args}->{result}) eq 'ARRAY' ?
-        ($session, $event) = @{$heap->{args}->{result}} :
-        return;
-    $kernel->post($session, $event, $result);
+    if (ref($heap->{args}->{result}) eq 'ARRAY') {
+        $kernel->post($heap->{args}->{result}->[0], 
+            $heap->{args}->{result}->[1], $result);
+    }
 }
 
 sub handle_task_debug {
     my ($kernel,$heap,$result) = @_[KERNEL,HEAP,ARG0];
     return unless defined $heap->{args}->{debug};
-    my ($session, $event);
-    ref($heap->{args}->{debug}) eq 'ARRAY' ?
-        ($session, $event) = @{$heap->{args}->{debug}} :
-        return;
-    $kernel->post($session, $event, $result);
+    if (ref($heap->{args}->{debug}) eq 'ARRAY') {
+        $kernel->post($heap->{args}->{debug}->[0],
+            $heap->{args}->{debug}->[1], $result);
+    }
 }
 
 sub _start {
@@ -92,12 +89,14 @@ sub _start {
 
 sub next_task {
     my ($kernel, $heap) = @_[KERNEL, HEAP];
-    while ( keys( %{ $heap->{task} }) < $heap->{args}->{max_concurrent} ) {
+    my $max_con = $heap->{args}->{max_concurrent};
+    while ( scalar keys %{$heap->{task}} < $max_con ) {
         my $next_task = shift @{$heap->{todo}};
         if (defined $next_task) {
+            my $filter = POE::Filter::Reference->new('Storable');
             my $task = POE::Wheel::Run->new(
                 Program => sub { do_stuff($next_task) },
-                StdoutFilter => POE::Filter::Reference->new(),
+                StdoutFilter => $filter,
                 StdoutEvent  => 'task_result',
                 StderrEvent  => 'task_debug',
                 CloseEvent   => 'task_done',
@@ -106,6 +105,7 @@ sub next_task {
             $heap->{task}->{ $task->ID } = $task;
         }
         else {
+            delete $heap->{todo};
             $kernel->delay('next_task', 1);
             last;
         }
@@ -117,6 +117,7 @@ sub _stop {
     $kernel->alias_remove($heap->{args}->{alias});
     delete $heap->{args};
     delete $heap->{todo};
+    delete $heap->{task};
 }
 
 sub handle_add_task {
@@ -129,6 +130,9 @@ sub handle_task_done {
     my ( $kernel, $heap, $task_id ) = @_[ KERNEL, HEAP, ARG0 ];
     $heap->{task}->{$task_id}->kill(9);
     delete $heap->{task}->{$task_id};
+    unless (scalar keys %{$heap->{task}}) {
+        delete $heap->{task};
+    }
     $kernel->yield("next_task");
 }
 
@@ -147,7 +151,7 @@ sub handle_killme {
 sub do_stuff {
     binmode(STDOUT);    # Required for this to work on MSWin32
     my $task   = shift;
-    my $filter = POE::Filter::Reference->new();
+    my $filter = POE::Filter::Reference->new('Storable');
     croak 'no domain in todo' unless $task->{domain};
     croak 'no trackers in todo' unless @{$task->{trackers}};
     croak 'no MogileFS::Client method in todo' unless $task->{method};
@@ -179,11 +183,11 @@ POE::Component::Client::MogileFS - an async MogileFS client for POE
 
 =head1 VERSION
 
-Version 0.01
+Version 0.02
 
 =cut
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 =head1 SYNOPSIS
 
